@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hex 与 文本 互转工具</title>
+<style>
+  :root {
+    --primary: #2d8cf0;
+    --primary-dark: #1c73c9;
+    --bg: #f5f7fa;
+    --card: #ffffff;
+    --border: #e4e7ed;
+    --text: #303133;
+    --text-light: #909399;
+    --code-bg: #f8f8f8;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 20px;
+  }
+  .container { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .breadcrumb { color: var(--text-light); font-size: 13px; margin-bottom: 20px; }
+  .breadcrumb a { color: var(--primary); text-decoration: none; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 18px;
+  }
+  .card-title { font-size: 15px; font-weight: 600; margin-bottom: 14px; color: var(--text); }
+  .btn-row { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn {
+    border: 1px solid var(--border);
+    background: #fff;
+    color: var(--text);
+    padding: 7px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: all .15s;
+  }
+  .btn:hover { border-color: var(--primary); color: var(--primary); }
+  .btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .btn.primary:hover { background: var(--primary-dark); }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .row label { font-size: 13px; color: var(--text-light); min-width: 70px; }
+  input[type="text"], textarea, select {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 14px;
+    color: var(--text);
+    background: #fff;
+    font-family: inherit;
+  }
+  input:focus, textarea:focus, select:focus { outline: none; border-color: var(--primary); }
+  input[type="text"] { width: 320px; }
+  textarea { width: 100%; min-height: 110px; resize: vertical; font-family: "SFMono-Regular", Consolas, monospace; }
+  .radio-group { display: flex; gap: 14px; }
+  .radio-group label { display: flex; align-items: center; gap: 4px; min-width: auto; cursor: pointer; font-size: 13px; color: var(--text-light); }
+  .output {
+    margin-top: 12px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: "SFMono-Regular", Consolas, monospace;
+    font-size: 14px;
+    min-height: 20px;
+    word-break: break-all;
+    white-space: pre-wrap;
+  }
+  .divider { border-top: 1px dashed var(--border); margin: 20px 0; }
+  .intro { font-size: 13px; color: #606266; line-height: 1.9; }
+  .intro h3 { font-size: 14px; margin: 14px 0 6px; }
+  footer { text-align: center; color: var(--text-light); font-size: 12px; margin-top: 30px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="breadcrumb"><a href="#">在线工具</a> › 开发类 › Hex 与文本互转</div>
+  <h1>Hex 与文本互转</h1>
+
+  <div class="card">
+    <div class="card-title">文本 ➜ Hex</div>
+    <div class="row">
+      <label>文本</label>
+      <textarea id="strInput" placeholder="输入要转换为十六进制的文本，如：Hello 世界"></textarea>
+    </div>
+    <div class="row">
+      <label>大小写</label>
+      <div class="radio-group">
+        <label><input type="radio" name="case" value="lower" checked> 小写</label>
+        <label><input type="radio" name="case" value="upper"> 大写</label>
+      </div>
+    </div>
+    <div class="row">
+      <label>分隔符</label>
+      <select id="strSep">
+        <option value="">无</option>
+        <option value=" ">空格</option>
+        <option value=":">冒号 :</option>
+        <option value="-">连字符 -</option>
+      </select>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" id="str2hex">转换</button>
+      <button class="btn" id="str2hexCopy">复制结果</button>
+    </div>
+    <div class="output" id="str2hexOut"></div>
+
+    <div class="divider"></div>
+
+    <div class="card-title">Hex ➜ 文本</div>
+    <div class="row">
+      <label>Hex</label>
+      <textarea id="hexInput" placeholder="输入十六进制字符串，如：48656c6c6f 或 48 65 6c 6c 6f"></textarea>
+    </div>
+    <div class="row">
+      <label>编码</label>
+      <select id="hexEnc">
+        <option value="utf-8">UTF-8</option>
+        <option value="ascii">ASCII / Latin-1</option>
+      </select>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" id="hex2str">转换</button>
+      <button class="btn" id="hex2strCopy">复制结果</button>
+    </div>
+    <div class="output" id="hex2strOut"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">简介</div>
+    <div class="intro">
+      <p>本工具将文本与十六进制（Hex）字符串互相转换。文本按 <b>UTF-8</b> 编码为字节后，以两位十六进制表示一个字节；反向则把每两个十六进制字符还原为一个字节并解码为文本。</p>
+      <h3>使用提示</h3>
+      <p>Hex 输入支持带空格、冒号或连字符分隔的形式，转换时会自动忽略分隔符与空白；非法字符或长度为奇数将导致转换失败，请检查输入。ASCII/Latin-1 模式按单字节处理，适合不含多字节字符的场景。</p>
+    </div>
+  </div>
+
+  <footer>© 2026 Hex 与文本互转工具 · 复刻版 · 本地运行无需联网</footer>
+</div>
+
+<script>
+function toast(msg) {
+  let t = document.getElementById("__toast");
+  if (!t) { t = document.createElement("div"); t.id = "__toast"; t.style.cssText = "position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fff;padding:8px 18px;border-radius:20px;font-size:13px;z-index:9999;"; document.body.appendChild(t); }
+  t.textContent = msg; t.style.display = "block";
+  clearTimeout(t._timer); t._timer = setTimeout(() => t.style.display = "none", 1500);
+}
+
+document.getElementById("str2hex").onclick = () => {
+  const text = document.getElementById("strInput").value;
+  if (!text) { document.getElementById("str2hexOut").textContent = "请输入文本"; return; }
+  const upper = document.querySelector('input[name="case"]:checked').value === "upper";
+  const sep = document.getElementById("strSep").value;
+  const bytes = new TextEncoder().encode(text);
+  let hex = "";
+  for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+  if (upper) hex = hex.toUpperCase();
+  if (sep) hex = hex.match(/.{1,2}/g).join(sep);
+  document.getElementById("str2hexOut").textContent = hex;
+};
+
+document.getElementById("hex2str").onclick = () => {
+  const raw = document.getElementById("hexInput").value.trim();
+  if (!raw) { document.getElementById("hex2strOut").textContent = "请输入 Hex 字符串"; return; }
+  const enc = document.getElementById("hexEnc").value;
+  const clean = raw.replace(/[\s:,-]/g, "");
+  if (clean.length % 2 !== 0) { document.getElementById("hex2strOut").textContent = "Hex 长度必须为偶数"; return; }
+  if (!/^[0-9a-fA-F]+$/.test(clean)) { document.getElementById("hex2strOut").textContent = "包含非法的 Hex 字符"; return; }
+  const bytes = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(clean.substr(i * 2, 2), 16);
+  let text;
+  if (enc === "utf-8") {
+    text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  } else {
+    text = Array.from(bytes).map(b => String.fromCharCode(b)).join("");
+  }
+  document.getElementById("hex2strOut").textContent = text;
+};
+
+document.getElementById("str2hexCopy").onclick = () => {
+  const t = document.getElementById("str2hexOut").textContent;
+  if (t) navigator.clipboard.writeText(t).then(() => toast("已复制"));
+};
+document.getElementById("hex2strCopy").onclick = () => {
+  const t = document.getElementById("hex2strOut").textContent;
+  if (t) navigator.clipboard.writeText(t).then(() => toast("已复制"));
+};
+</script>
+</body>
+</html>
