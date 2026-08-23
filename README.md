@@ -63,12 +63,13 @@ npx serve .
 
 ### 导入 / 导出
 
-- **导出 JSON**：点击「导出 JSON」可选择
-  - **明文导出**：导出的 `.json` 可直接被任意文本编辑器读取；
-  - **加密导出**：使用 AES-GCM 算法、PBKDF2（SHA-256，10 万次迭代）从你设置的密码派生密钥，对整个数据加密后导出。文件结构为 `{ encrypted:true, alg, kdf, salt, iv, data }`，密钥与盐随文件导出，但密文本身无法在无密码情况下还原。
+- **导出**：点击「导出」选择格式与加密方式
+  - 格式：**JSON 文件** 或 **二维码图片**（生成后可下载 PNG，容量约 2000 字符，数据过大时请使用 JSON 文件）；
+  - 加密：**明文**（可直接读取）或 **加密**（AES-GCM + PBKDF2 派生密钥，文件名以 `_enc` / `_plain` 区分，二维码内容同样支持）。
 - **导入 JSON**：选择文件后自动识别类型
   - 明文文件：直接解析并选择「合并 / 替换」导入；
   - 加密文件：自动弹出密码框，输入正确密码后解密再导入。
+- **导入二维码**：上传二维码图片或摄像头扫码，内容与 JSON 导入同规则（明文直接导入，密文需输入密码）。
 - **导入 TOTP 链接**：粘贴标准 `otpauth://totp/...` 链接，仅新增一条 TOTP 密钥，不影响密码库其它数据。
 
 > 加密采用标准做法：密码仅存在于你的记忆中，遗忘后文件将无法解密，请妥善保管。
@@ -86,9 +87,10 @@ npx serve .
 
 ## 技术说明
 
-- 单文件 HTML，CSS 与 JavaScript 内联，无第三方依赖
-- 所有转换逻辑在浏览器端完成，数据不上传服务器
-- 使用 `TextEncoder` / `TextDecoder`、`Intl.DateTimeFormat` 等现代 Web API
+- 单文件 HTML，CSS 与 JavaScript 内联，无后端
+- 二维码功能通过 CDN 引用 `qrcode-generator` 与 `jsQR` 库（MIT 协议），已锁定版本号
+- 所有转换与加解密逻辑在浏览器端完成，账号数据不会上传任何服务器（CDN 仅用于加载公开的库代码）
+- 使用 `TextEncoder` / `TextDecoder`、Web Crypto API（AES-GCM / PBKDF2）、`Intl.DateTimeFormat` 等现代 Web API
 
 ## 浏览器兼容
 
