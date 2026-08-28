@@ -129,6 +129,13 @@
   .xfer-meta { flex: 1; min-width: 0; }
   .xfer-name { font-size: 14px; font-weight: 600; word-break: break-all; }
   .xfer-sub { font-size: 12px; color: var(--text-light); }
+  .xfer-hash {
+    margin-top: 6px; font-size: 12px; color: var(--text-light);
+    word-break: break-all; font-family: "SFMono-Regular", Consolas, monospace;
+  }
+  .xfer-hash.ok { color: var(--success); }
+  .xfer-hash.bad { color: var(--danger); }
+  .xfer-item.hash-mismatch { border-color: var(--danger); }
   .xfer-actions { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; }
   .xfer-preview { margin-top: 8px; }
   .xfer-preview img { max-width: 100%; max-height: 220px; border-radius: 6px; border: 1px solid var(--border); }
@@ -274,6 +281,8 @@
       <p>公共 MQTT 只交换几 KB 的连接说明（SDP/ICE）。文件、图片、剪贴板走 WebRTC DataChannel。</p>
       <h3>连不上时</h3>
       <p>跨网（例如手机流量对家里宽带）可能打洞失败，本页未配置 TURN 中继。请改连同一 Wi-Fi，或让电脑/手机开热点后再试。</p>
+      <h3>校验</h3>
+      <p>文件传完后双方用浏览器计算 SHA-256。一致显示绿色；不一致仍可保存，但文件可能已损坏。可复制哈希，用系统工具（如 <code>certutil -hashfile 文件 SHA256</code>）核对。</p>
       <h3>隐私</h3>
       <p>知道房间码的人可以加入。请不要把房间码发到公开群。文件内容不经过本站；信令会经过公共 MQTT 服务器。</p>
     </div>
@@ -343,6 +352,9 @@ const S = {
   sendQueue: [],
   sending: false,
   recv: null,
+  earlyBins: [],
+  pendingDoneId: null,
+  pendingSha256: "",
   items: [],
   helloTimer: null,
   reconnectTimer: null,
@@ -387,6 +399,50 @@ function refreshChunkPayload() {
 function getChunkPayload() {
   if (S._chunkPayload) return S._chunkPayload;
   return refreshChunkPayload();
+}
+
+function bytesToHex(buf) {
+  const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  let out = "";
+  for (let i = 0; i < u8.length; i++) out += u8[i].toString(16).padStart(2, "0");
+  return out;
+}
+function normalizeSha256(s) {
+  s = String(s || "").trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(s) ? s : "";
+}
+async function sha256Hex(blob) {
+  if (!crypto.subtle) throw new Error("需要 HTTPS 才能计算哈希");
+  const buf = await blob.arrayBuffer();
+  const hash = await crypto.subtle.digest("SHA-256", buf);
+  return bytesToHex(hash);
+}
+function hashStateOf(local, remote) {
+  if (!local) return "pending";
+  if (!remote) return "local";
+  return local === remote ? "ok" : "mismatch";
+}
+function applyItemHash(item, local, remote) {
+  if (!item) return;
+  const prev = item.hashState;
+  if (local) item.sha256 = local;
+  if (remote) item.sha256Remote = remote;
+  item.hashState = hashStateOf(item.sha256, item.sha256Remote);
+  renderInbox();
+  if (item.dir === "in" && item.hashState === "mismatch" && prev !== "mismatch") {
+    toast("SHA-256 不一致，文件可能损坏");
+  }
+}
+async function verifyItemHash(id, blob, expectedRemote) {
+  const item = S.items.find(x => x.id === id);
+  if (!item || !blob) return;
+  try {
+    const hex = await sha256Hex(blob);
+    applyItemHash(item, hex, expectedRemote || item.sha256Remote || "");
+  } catch (e) {
+    item.hashState = "error";
+    renderInbox();
+  }
 }
 
 function primaryDc() {
@@ -453,9 +509,21 @@ function progressPct(it) {
 }
 function progressStatus(it) {
   if (it.status === "error") return it.errorMsg || "失败";
-  if (it.status === "done") return "";
+  if (it.status === "done") {
+    if (it.hashState === "pending") return "校验中…";
+    if (it.hashState === "ok") return "SHA-256 一致";
+    if (it.hashState === "mismatch") return "SHA-256 不一致";
+    if (it.hashState === "error") return "无法计算哈希";
+    return "";
+  }
   const verb = it.status === "send" ? "发送中" : "接收中";
   return verb + " " + progressPct(it) + "%";
+}
+
+function resetRecv() {
+  if (S.recv && S.recv.finishTimer) clearTimeout(S.recv.finishTimer);
+  S.recv = null;
+  S.earlyBins = [];
 }
 
 function failActiveTransfers(msg) {
@@ -465,7 +533,9 @@ function failActiveTransfers(msg) {
       it.errorMsg = msg;
     }
   });
-  S.recv = null;
+  resetRecv();
+  S.pendingDoneId = null;
+  S.pendingSha256 = "";
   renderInbox();
 }
 
@@ -653,7 +723,7 @@ async function handleSignal(msg) {
 }
 
 function dcOptions() {
-  return { ordered: false, protocol: "xfer-v2" };
+  return { ordered: true, protocol: "xfer-v2" };
 }
 
 function isLinkUp() {
@@ -886,7 +956,9 @@ function closeRtc(sendBye) {
   }
   S.pendingIce = [];
   S.connected = false;
-  S.recv = null;
+  resetRecv();
+  S.pendingDoneId = null;
+  S.pendingSha256 = "";
 }
 
 async function addIce(cand) {
@@ -929,6 +1001,7 @@ function attachDc(dc, idx) {
   S.dcs[idx] = dc;
   dc.binaryType = "arraybuffer";
   dc.bufferedAmountLowThreshold = 2 * 1024 * 1024;
+  let msgChain = Promise.resolve();
   dc.onopen = () => {
     S.dcOpenCount++;
     if (S.dcs.filter(Boolean).length >= DC_COUNT &&
@@ -938,7 +1011,28 @@ function attachDc(dc, idx) {
   };
   dc.onclose = onAnyDcClose;
   dc.onerror = () => {};
-  dc.onmessage = onDcMessage;
+  dc.onmessage = (ev) => {
+    const data = ev.data;
+    msgChain = msgChain.then(async () => {
+      if (typeof data === "string") {
+        onDcMessage({ data });
+        return;
+      }
+      if (data instanceof ArrayBuffer) {
+        onDcMessage({ data });
+        return;
+      }
+      if (ArrayBuffer.isView(data)) {
+        onDcMessage({
+          data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+        });
+        return;
+      }
+      if (data && typeof data.arrayBuffer === "function") {
+        onDcMessage({ data: await data.arrayBuffer() });
+      }
+    }).catch((e) => { console.warn("dc message", e); });
+  };
 }
 
 function createAllChannels(pc) {
@@ -1108,6 +1202,103 @@ async function updatePathHint() {
   } catch (e) {}
 }
 
+function failCurrentRecv(msg) {
+  if (!S.recv) return;
+  const item = S.items.find(x => x.id === S.recv.id);
+  if (item && (item.status === "recv" || item.status === "send")) {
+    item.status = "error";
+    item.errorMsg = msg;
+  }
+  resetRecv();
+  renderInbox();
+  toast(msg);
+}
+
+function recvMissingCount() {
+  if (!S.recv) return 0;
+  let missing = 0;
+  for (let i = 0; i < S.recv.totalChunks; i++) {
+    if (!S.recv.chunks[i]) missing++;
+  }
+  return missing;
+}
+
+function applyRecvChunk(buf) {
+  if (!S.recv || !buf || buf.byteLength <= CHUNK_HDR) return;
+  const index = new DataView(buf).getUint32(0, false);
+  if (index >= S.recv.totalChunks) return;
+  const payload = buf.slice(CHUNK_HDR);
+  if (!S.recv.chunks[index]) S.recv.received += payload.byteLength;
+  S.recv.chunks[index] = payload;
+  const item = S.items.find(x => x.id === S.recv.id);
+  if (item && S.recv.size) {
+    item.progress = Math.min(1, S.recv.received / S.recv.size);
+    updateItemProgress(item);
+  }
+}
+
+function flushEarlyBins() {
+  const bins = S.earlyBins;
+  S.earlyBins = [];
+  if (!S.recv) return;
+  for (let i = 0; i < bins.length; i++) applyRecvChunk(bins[i]);
+}
+
+function assembleRecv() {
+  const recv = S.recv;
+  if (!recv) return;
+  if (recv.finishTimer) {
+    clearTimeout(recv.finishTimer);
+    recv.finishTimer = null;
+  }
+  const parts = [];
+  for (let i = 0; i < recv.totalChunks; i++) {
+    if (recv.chunks[i]) parts.push(recv.chunks[i]);
+  }
+  const blob = new Blob(parts, { type: recv.mime });
+  if (blob.size !== recv.size) {
+    failCurrentRecv("接收大小不符（" + blob.size + "/" + recv.size + "）");
+    return;
+  }
+  const item = S.items.find(x => x.id === recv.id);
+  const expectedHash = recv.sha256 || "";
+  if (item) {
+    item.blob = blob;
+    item.status = "done";
+    item.progress = 1;
+    item.hashState = "pending";
+    if (expectedHash) item.sha256Remote = expectedHash;
+    if (item.kind === "text") {
+      blob.text().then((t) => { item.text = t; renderInbox(); });
+    }
+  }
+  if (S.pendingDoneId === recv.id) {
+    S.pendingDoneId = null;
+    S.pendingSha256 = "";
+  }
+  S.recv = null;
+  S.earlyBins = [];
+  renderInbox();
+  if (item) verifyItemHash(item.id, blob, expectedHash);
+}
+
+function finishRecvIfReady() {
+  if (!S.recv) return;
+  const missing = recvMissingCount();
+  if (missing === 0 && (S.recv.gotDone || S.recv.totalChunks > 0)) {
+    assembleRecv();
+    return;
+  }
+  if (!S.recv.gotDone || missing === 0) return;
+  if (S.recv.finishTimer) return;
+  S.recv.finishTimer = setTimeout(() => {
+    if (!S.recv) return;
+    const still = recvMissingCount();
+    if (still > 0) failCurrentRecv("接收不完整（缺 " + still + " 片）");
+    else assembleRecv();
+  }, 15000);
+}
+
 function onDcMessage(ev) {
   if (typeof ev.data === "string") {
     let msg;
@@ -1121,66 +1312,65 @@ function onDcMessage(ev) {
       return;
     }
     if (msg.type === "meta") {
+      if (S.recv && S.recv.id === msg.id) {
+        flushEarlyBins();
+        if (S.pendingDoneId === msg.id) {
+          S.recv.gotDone = true;
+          if (S.pendingSha256) S.recv.sha256 = S.pendingSha256;
+          S.pendingDoneId = null;
+          S.pendingSha256 = "";
+        }
+        finishRecvIfReady();
+        return;
+      }
+      if (S.recv) failCurrentRecv("被新传输中断");
       const payloadSize = msg.payloadSize || getChunkPayload();
-      const totalChunks = msg.totalChunks || Math.ceil((msg.size || 0) / payloadSize) || 1;
+      const totalChunks = Number.isFinite(msg.totalChunks)
+        ? msg.totalChunks
+        : (Math.ceil((msg.size || 0) / payloadSize) || 0);
       S.recv = {
         id: msg.id, name: msg.name || "file", mime: msg.mime || "application/octet-stream",
         size: msg.size || 0, kind: msg.kind || "file", payloadSize,
-        chunks: new Array(totalChunks), totalChunks, received: 0
+        chunks: new Array(totalChunks), totalChunks, received: 0,
+        gotDone: S.pendingDoneId === msg.id, finishTimer: null,
+        sha256: S.pendingDoneId === msg.id ? S.pendingSha256 : ""
       };
+      if (S.pendingDoneId === msg.id) {
+        S.pendingDoneId = null;
+        S.pendingSha256 = "";
+      }
       addItem({
         id: msg.id, dir: "in", kind: S.recv.kind, name: S.recv.name,
         mime: S.recv.mime, size: S.recv.size, status: "recv", progress: 0
       });
+      flushEarlyBins();
+      finishRecvIfReady();
       return;
     }
-    if (msg.type === "done" && S.recv && S.recv.id === msg.id) {
-      let missing = 0;
-      for (let i = 0; i < S.recv.totalChunks; i++) {
-        if (!S.recv.chunks[i]) missing++;
+    if (msg.type === "done") {
+      const sha256 = normalizeSha256(msg.sha256);
+      if (S.recv && S.recv.id === msg.id) {
+        S.recv.gotDone = true;
+        S.recv.sha256 = sha256;
+        finishRecvIfReady();
+      } else {
+        S.pendingDoneId = msg.id;
+        S.pendingSha256 = sha256;
+        const item = S.items.find(x => x.id === msg.id);
+        if (item && item.status === "done") applyItemHash(item, item.sha256, sha256);
       }
-      const item = S.items.find(x => x.id === msg.id);
-      if (missing > 0) {
-        if (item) {
-          item.status = "error";
-          item.errorMsg = "接收不完整（缺 " + missing + " 片）";
-          renderInbox();
-        }
-        S.recv = null;
-        toast("文件接收不完整");
-        return;
-      }
-      const parts = [];
-      for (let i = 0; i < S.recv.totalChunks; i++) {
-        if (S.recv.chunks[i]) parts.push(S.recv.chunks[i]);
-      }
-      const blob = new Blob(parts, { type: S.recv.mime });
-      if (item) {
-        item.blob = blob;
-        item.status = "done";
-        item.progress = 1;
-        if (item.kind === "text") {
-          blob.text().then((t) => { item.text = t; renderInbox(); });
-        }
-      }
-      S.recv = null;
-      renderInbox();
     }
     return;
   }
-  if (!S.recv) return;
-  if (ev.data.byteLength <= CHUNK_HDR) return;
-  const view = new DataView(ev.data);
-  const index = view.getUint32(0, false);
-  const payload = ev.data.slice(CHUNK_HDR);
-  if (index >= S.recv.totalChunks) return;
-  if (!S.recv.chunks[index]) S.recv.received += payload.byteLength;
-  S.recv.chunks[index] = payload;
-  const item = S.items.find(x => x.id === S.recv.id);
-  if (item && S.recv.size) {
-    item.progress = Math.min(1, S.recv.received / S.recv.size);
-    updateItemProgress(item);
+  const buf = ev.data;
+  if (!buf || typeof buf.byteLength !== "number") return;
+  if (!S.recv) {
+    S.earlyBins.push(buf);
+    if (S.earlyBins.length > 2048) S.earlyBins.shift();
+    return;
   }
+  applyRecvChunk(buf);
+  finishRecvIfReady();
 }
 
 function addItem(item) {
@@ -1205,9 +1395,9 @@ function renderItem(it) {
   const dir = it.dir === "out" ? "发送" : "接收";
   const st = progressStatus(it);
   let icon = "📄";
-  if (it.kind === "text") icon = "💬";
+  if (it.status === "error" || it.hashState === "mismatch") icon = "⚠️";
+  else if (it.kind === "text") icon = "💬";
   else if (it.kind === "image") icon = "🖼️";
-  else if (it.status === "error") icon = "⚠️";
   const sub = [dir, formatSize(it.size || 0), st].filter(Boolean).join(" · ");
   let extra = "";
   if (it.status !== "done" && it.status !== "error") {
@@ -1221,12 +1411,18 @@ function renderItem(it) {
     if (!it.url) it.url = URL.createObjectURL(it.blob);
     extra += '<div class="xfer-preview"><img src="' + it.url + '" alt=""></div>';
   }
+  if (it.status === "done" && (it.sha256 || it.hashState === "pending" || it.hashState === "error")) {
+    const hc = it.hashState === "ok" ? " ok" : it.hashState === "mismatch" ? " bad" : "";
+    extra += '<div class="xfer-hash' + hc + '"></div>';
+  }
   let actions = "";
   if (it.status === "done") {
     if (it.kind === "text") actions += '<button class="btn sm" data-act="copy" data-id="' + it.id + '">复制</button>';
     if (it.blob || it.kind !== "text") actions += '<button class="btn sm" data-act="save" data-id="' + it.id + '">保存</button>';
+    if (it.sha256) actions += '<button class="btn sm" data-act="copyhash" data-id="' + it.id + '">复制哈希</button>';
   }
-  return '<div class="xfer-item" data-item="' + it.id + '"><div class="xfer-head"><div class="xfer-icon">' + icon +
+  const itemClass = "xfer-item" + (it.hashState === "mismatch" ? " hash-mismatch" : "");
+  return '<div class="' + itemClass + '" data-item="' + it.id + '"><div class="xfer-head"><div class="xfer-icon">' + icon +
     '</div><div class="xfer-meta"><div class="xfer-name"></div><div class="xfer-sub">' + sub +
     '</div>' + extra + '</div><div class="xfer-actions">' + actions + "</div></div></div>";
 }
@@ -1239,6 +1435,16 @@ function afterRenderFillText() {
     if (nameEl) nameEl.textContent = it.name || "";
     const textEl = root.querySelector(".xfer-text");
     if (textEl && it.text != null) textEl.textContent = it.text;
+    const hashEl = root.querySelector(".xfer-hash");
+    if (hashEl) {
+      if (it.hashState === "pending") hashEl.textContent = "正在计算 SHA-256…";
+      else if (it.hashState === "error") hashEl.textContent = "无法计算哈希（需要 HTTPS）";
+      else if (it.hashState === "ok") hashEl.textContent = "SHA-256 一致  " + (it.sha256 || "");
+      else if (it.hashState === "mismatch") {
+        hashEl.textContent = "SHA-256 不一致  本地 " + (it.sha256 || "") +
+          (it.sha256Remote ? "  /  对方 " + it.sha256Remote : "");
+      } else if (it.sha256) hashEl.textContent = "SHA-256  " + it.sha256;
+    }
   });
 }
 
@@ -1270,6 +1476,8 @@ $("inbox").addEventListener("click", (e) => {
   if (!it) return;
   if (btn.dataset.act === "copy") {
     copyText(itemText(it));
+  } else if (btn.dataset.act === "copyhash") {
+    copyText(it.sha256 || "");
   } else if (btn.dataset.act === "save") {
     let blob = it.blob;
     if (!blob && it.text != null) blob = new Blob([it.text], { type: "text/plain" });
@@ -1291,51 +1499,71 @@ function updateProgressThrottled(it, progress) {
   }
 }
 
-function waitBuffered(dc) {
-  const limit = perDcBufferLimit();
+function waitBuffered(dc, limit, timeoutMs) {
+  if (limit == null) limit = perDcBufferLimit();
   if (!dc || dc.readyState !== "open") return Promise.reject(new Error("连接中断"));
   if (dc.bufferedAmount <= limit) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
+    let settled = false;
+    let poll = null;
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (poll) clearInterval(poll);
       dc.removeEventListener("bufferedamountlow", onLow);
-      reject(new Error("发送超时，连接可能已中断"));
-    }, 45000);
+      if (err) reject(err);
+      else resolve();
+    };
+    const timeout = setTimeout(() => finish(new Error("发送超时，连接可能已中断")), timeoutMs || 45000);
     const onLow = () => {
       if (!dc || dc.readyState !== "open") {
-        clearTimeout(timeout);
-        dc.removeEventListener("bufferedamountlow", onLow);
-        reject(new Error("连接中断"));
+        finish(new Error("连接中断"));
         return;
       }
-      if (dc.bufferedAmount <= limit) {
-        clearTimeout(timeout);
-        dc.removeEventListener("bufferedamountlow", onLow);
-        resolve();
-      }
+      if (dc.bufferedAmount <= limit) finish();
     };
     dc.addEventListener("bufferedamountlow", onLow);
+    poll = setInterval(onLow, 50);
+    onLow();
   });
 }
 
-function readBlock(blob, offset) {
-  const end = Math.min(offset + READ_BLOCK, blob.size);
+async function waitDcDrain(dc) {
+  if (!dc || dc.readyState !== "open") throw new Error("连接中断");
+  const prev = dc.bufferedAmountLowThreshold;
+  dc.bufferedAmountLowThreshold = 0;
+  try {
+    await waitBuffered(dc, 0, 180000);
+  } finally {
+    try { dc.bufferedAmountLowThreshold = prev; } catch (e) {}
+  }
+}
+
+function sendBlockSize(payloadSize) {
+  payloadSize = payloadSize || 1;
+  const n = Math.floor(READ_BLOCK / payloadSize);
+  return (n > 0 ? n : 1) * payloadSize;
+}
+
+function readBlock(blob, offset, length) {
+  const end = Math.min(offset + length, blob.size);
   return blob.slice(offset, end).arrayBuffer().then((buf) => new Uint8Array(buf));
 }
 
-async function sendBlobData(blob, item) {
-  const payloadSize = getChunkPayload();
+async function sendBlobData(blob, item, payloadSize) {
+  payloadSize = payloadSize || getChunkPayload();
+  const blockSize = sendBlockSize(payloadSize);
   const dc = primaryDc();
   let fileOffset = 0;
   let chunkIndex = 0;
-  let pktCache = null;
-  let hdr = null;
-  let nextBlockPromise = readBlock(blob, 0);
+  let nextBlockPromise = blob.size ? readBlock(blob, 0, blockSize) : null;
 
   while (fileOffset < blob.size) {
     assertTransferReady();
     const block = await nextBlockPromise;
-    const blockEnd = Math.min(fileOffset + READ_BLOCK, blob.size);
-    if (blockEnd < blob.size) nextBlockPromise = readBlock(blob, blockEnd);
+    const blockEnd = Math.min(fileOffset + blockSize, blob.size);
+    if (blockEnd < blob.size) nextBlockPromise = readBlock(blob, blockEnd, blockSize);
     let pos = 0;
     while (pos < block.length) {
       if (dc.bufferedAmount > perDcBufferLimit()) {
@@ -1343,19 +1571,18 @@ async function sendBlobData(blob, item) {
         await waitBuffered(dc);
       }
       const len = Math.min(payloadSize, block.length - pos);
-      const pktLen = CHUNK_HDR + len;
-      if (!pktCache || pktCache.length < pktLen) pktCache = new Uint8Array(pktLen);
-      if (!hdr) hdr = new DataView(pktCache.buffer);
-      hdr.setUint32(0, chunkIndex, false);
-      pktCache.set(block.subarray(pos, pos + len), CHUNK_HDR);
-      safeSend(dc, pktCache.subarray(0, pktLen));
+      const pkt = new ArrayBuffer(CHUNK_HDR + len);
+      new DataView(pkt).setUint32(0, chunkIndex, false);
+      new Uint8Array(pkt).set(block.subarray(pos, pos + len), CHUNK_HDR);
+      safeSend(dc, pkt);
       pos += len;
       chunkIndex++;
     }
     fileOffset = blockEnd;
-    updateProgressThrottled(item, fileOffset / blob.size);
+    updateProgressThrottled(item, blob.size ? fileOffset / blob.size : 1);
   }
   updateItemProgress(item);
+  await waitDcDrain(dc);
 }
 
 function enqueue(job) {
@@ -1397,20 +1624,27 @@ async function doSend(job) {
   const kind = job.kind || (mime.indexOf("image/") === 0 ? "image" : "file");
   const payloadSize = getChunkPayload();
   const item = {
-    id, dir: "out", kind, name, mime, size: blob.size, blob, status: "send", progress: 0
+    id, dir: "out", kind, name, mime, size: blob.size, blob, status: "send", progress: 0, hashState: "pending"
   };
   addItem(item);
   try {
-    const totalChunks = Math.ceil(blob.size / payloadSize) || 1;
+    const totalChunks = blob.size ? Math.ceil(blob.size / payloadSize) : 0;
     safeSend(dc, JSON.stringify({
       v: 2, type: "meta", id, name, mime, size: blob.size, kind, totalChunks, payloadSize
     }));
-    await sendBlobData(blob, item);
+    await sendBlobData(blob, item, payloadSize);
+    const sha256 = await sha256Hex(blob).catch((e) => {
+      item.hashError = (e && e.message) || "哈希失败";
+      return "";
+    });
     assertTransferReady();
-    safeSend(dc, JSON.stringify({ v: 2, type: "done", id }));
+    const doneMsg = { v: 2, type: "done", id };
+    if (sha256) doneMsg.sha256 = sha256;
+    safeSend(dc, JSON.stringify(doneMsg));
     item.status = "done";
     item.progress = 1;
-    renderInbox();
+    if (sha256) applyItemHash(item, sha256, "");
+    else { item.hashState = "error"; renderInbox(); }
   } catch (e) {
     item.status = "error";
     item.errorMsg = e.message || "发送失败";
