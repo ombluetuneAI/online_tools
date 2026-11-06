@@ -10,6 +10,7 @@
 | Hex 与文本互转 | `hex.html` | 十六进制与文本字符串互相转换，支持 UTF-8 / ASCII、大小写与分隔符 |
 | 账号密码管理器 | `password.html` | 明文密码与 TOTP，JSON / 二维码导入导出（可加密） |
 | 设备互传 | `transfer.html` | 两台设备通过房间码互传文件、图片与剪贴板 |
+| 二维码 | `qrcode.html` | 文字/链接生成二维码、本地图片识别内容（含拖拽与粘贴，纯浏览器端） |
 
 ### 时间戳转换
 
@@ -32,6 +33,11 @@ tools/
 ├── hex.html         # Hex 与文本互转
 ├── password.html    # 账号密码管理器
 ├── transfer.html    # 设备互传
+├── qrcode.html      # 二维码生成与识别
+├── qrcode-shared.js # 二维码页与单测共用的纯逻辑
+├── package.json     # 仅用于 npm test（CI）
+├── tests/           # 单元测试
+├── scripts/         # E2E（puppeteer-core）
 └── README.md
 ```
 
@@ -54,6 +60,17 @@ npx serve .
 ```
 
 然后访问 `http://localhost:8080`。
+
+### 开发与测试（可选）
+
+仓库根目录提供 `package.json`，用于在 CI 与本机运行自动化测试（页面仍为纯静态文件，无需构建即可使用）：
+
+```bash
+npm ci
+npm test
+```
+
+`npm test` 会运行逻辑单测（`tests/`）以及基于本机 Chrome 的 `qrcode.html` 端到端脚本（`scripts/e2e-puppeteer.mjs`），验收截图输出到 `test-output/`（目录已忽略不入库）。
 
 ## 在线访问
 
@@ -102,7 +119,7 @@ npx serve .
 
 ## 技术说明
 
-- 单文件 HTML，CSS 与 JavaScript 内联，无后端
+- 各工具以独立 HTML 为主，样式与脚本内联（二维码页额外引入同目录 `qrcode-shared.js`）；无后端
 - 二维码功能通过 CDN 引用 `qrcode-generator` 与 `jsQR` 库（MIT 协议），已锁定版本号
 - 设备互传通过 CDN 引用 `mqtt`（MIT），信令使用公共 Broker 的 WebSocket（`wss`）
 - 所有转换与加解密逻辑在浏览器端完成，账号数据不会上传任何服务器（CDN 仅用于加载公开的库代码）

@@ -1,0 +1,17 @@
+{
+  "name": "online_tools",
+  "private": true,
+  "description": "静态在线工具页面，测试脚本见 npm test",
+  "scripts": {
+    "test": "node --test tests/unit.test.mjs && node scripts/e2e-puppeteer.mjs",
+    "test:unit": "node --test tests/unit.test.mjs",
+    "test:e2e": "node scripts/e2e-puppeteer.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^24.15.0",
+    "qrcode": "^1.5.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
